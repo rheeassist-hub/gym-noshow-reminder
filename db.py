@@ -1,12 +1,15 @@
 """
 SQLite 데이터 계층 - 회원, 예약, 리마인더 발송 로그, 노쇼 이력 관리
 """
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 
 DB_PATH = Path(__file__).parent / "data" / "gym.db"
+_IN_MEMORY = os.environ.get("GYM_DB_IN_MEMORY") == "1"
+_shared_conn = None  # in-memory 모드에서는 연결을 프로세스 내내 재사용해야 데이터가 유지됨
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS members (
@@ -38,6 +41,13 @@ CREATE TABLE IF NOT EXISTS reminder_log (
 
 
 def get_conn():
+    global _shared_conn
+    if _IN_MEMORY:
+        if _shared_conn is None:
+            _shared_conn = sqlite3.connect(":memory:", check_same_thread=False)
+            _shared_conn.row_factory = sqlite3.Row
+            _shared_conn.execute("PRAGMA foreign_keys = ON")
+        return _shared_conn
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -46,6 +56,14 @@ def get_conn():
 
 
 def init_db(reset: bool = False):
+    global _shared_conn
+    if _IN_MEMORY:
+        if reset:
+            _shared_conn = None  # 다음 get_conn()에서 새 인메모리 DB 생성
+        conn = get_conn()
+        conn.executescript(SCHEMA)
+        conn.commit()
+        return
     if reset and DB_PATH.exists():
         DB_PATH.unlink()
     conn = get_conn()
@@ -61,7 +79,8 @@ def session():
         yield conn
         conn.commit()
     finally:
-        conn.close()
+        if not _IN_MEMORY:
+            conn.close()
 
 
 def add_member(name: str, phone: str) -> int:
